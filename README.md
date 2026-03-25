@@ -1,3 +1,5 @@
+<img src="SupportingFiles/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="80" align="left" style="margin-right: 16px;" />
+
 # MemoryDot
 
 A lightweight macOS menu bar app that shows your system's memory pressure at a glance. A colored dot sits in your menu bar and changes color based on the kernel's own memory pressure assessment.
