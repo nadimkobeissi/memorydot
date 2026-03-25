@@ -12,12 +12,15 @@ targets:
         platform: macOS
         sources:
             - Sources/MemoryDot
-        resources:
-            - SupportingFiles/Assets.xcassets
+            - path: SupportingFiles/Assets.xcassets
+              buildPhase: resources
         settings:
             base:
-                PRODUCT_BUNDLE_IDENTIFIER: com.memorydot.app
+                PRODUCT_BUNDLE_IDENTIFIER: com.symbolicsoft.memorydot
                 INFOPLIST_FILE: SupportingFiles/Info.plist
+                INFOPLIST_KEY_CFBundleDisplayName: MemoryDot
+                MARKETING_VERSION: "1.0"
+                CURRENT_PROJECT_VERSION: 1
                 ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
                 COMBINE_HIDPI_IMAGES: true
                 CODE_SIGN_STYLE: Automatic
