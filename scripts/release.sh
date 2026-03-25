@@ -59,10 +59,21 @@ mkdir -p "$BUILD_DIR"
 
 echo "==> Releasing $APP_NAME v$VERSION"
 
-# ── 1. Generate Xcode project ───────────────────────────────
+# ── 1. Update version in project.yml ─────────────────────────
+
+echo "==> Updating version in project.yml..."
+cd "$PROJECT_DIR"
+sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"$VERSION\"/" project.yml
+
+# Increment build number (reads current value, adds 1)
+CURRENT_BUILD=$(grep 'CURRENT_PROJECT_VERSION:' project.yml | sed 's/[^0-9]//g')
+NEW_BUILD=$((CURRENT_BUILD + 1))
+sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $NEW_BUILD/" project.yml
+echo "    Version: $VERSION  Build: $NEW_BUILD"
+
+# ── 2. Generate Xcode project ───────────────────────────────
 
 echo "==> Generating Xcode project..."
-cd "$PROJECT_DIR"
 xcodegen generate --quiet
 
 # ── 2. Archive ───────────────────────────────────────────────
@@ -74,8 +85,6 @@ xcodebuild archive \
     -configuration Release \
     -destination 'generic/platform=macOS' \
     -archivePath "$ARCHIVE_PATH" \
-    MARKETING_VERSION="$VERSION" \
-    CURRENT_PROJECT_VERSION="$VERSION" \
     -quiet
 
 # ── 3. Export signed .app ────────────────────────────────────
