@@ -1,7 +1,10 @@
+import ServiceManagement
 import SwiftUI
 
 struct MenuContentView: View {
 	let monitor: MemoryMonitor
+
+	@State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
 	var body: some View {
 		// VM stats fetched on demand — only when the menu is open.
@@ -46,6 +49,19 @@ struct MenuContentView: View {
 		)
 		.font(.system(.caption, design: .monospaced))
 		.foregroundStyle(.secondary)
+
+		Toggle("Launch at Login", isOn: $launchAtLogin)
+			.onChange(of: launchAtLogin) { _, newValue in
+				do {
+					if newValue {
+						try SMAppService.mainApp.register()
+					} else {
+						try SMAppService.mainApp.unregister()
+					}
+				} catch {
+					launchAtLogin = SMAppService.mainApp.status == .enabled
+				}
+			}
 
 		Button("Website") {
 			NSWorkspace.shared.open(URL(string: "https://github.com/nadimkobeissi/memorydot")!)

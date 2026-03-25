@@ -1,4 +1,4 @@
-<img src="SupportingFiles/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="80" align="left" style="margin-right: 16px;" />
+<img src="SupportingFiles/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="64" align="left" style="margin-right: 16px;border-radius:10px" />
 
 # MemoryDot
 
