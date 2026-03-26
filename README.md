@@ -27,7 +27,7 @@ Click the dot to see a breakdown of your system's memory (wired, active, inactiv
 
 MemoryDot is designed to be invisible in terms of resource usage:
 
-- **Idle polling**: Two lightweight `sysctl` reads every 3 seconds (no Mach traps).
+- **Idle polling**: Two lightweight `sysctl` reads every 10 seconds (no Mach traps).
 - **Event-driven**: A `DispatchSource` memory pressure listener fires instantly on kernel pressure changes with zero idle cost.
 - **On-demand stats**: The detailed VM breakdown (`host_statistics64`) is only fetched when you open the menu.
 - **Cached icon**: The menu bar image is only redrawn when the pressure level actually changes.

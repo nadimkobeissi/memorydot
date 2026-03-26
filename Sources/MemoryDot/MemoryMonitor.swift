@@ -80,7 +80,7 @@ final class MemoryMonitor {
 
 	/// Timer polls only the lightweight sysctl calls (no Mach traps).
 	private func startPolling() {
-		timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+		timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
 			Task { @MainActor in
 				self?.refreshKernelPressure()
 			}
