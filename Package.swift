@@ -7,5 +7,6 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(name: "MemoryDot"),
+        .testTarget(name: "MemoryDotTests", dependencies: ["MemoryDot"]),
     ]
 )

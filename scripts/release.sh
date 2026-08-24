@@ -21,7 +21,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/release.sh 1.0
-#   ./scripts/release.sh 1.1 --skip-notarize   # for testing
+#   ./scripts/release.sh 1.1 --skip-notarize   # build only, publishes nothing
 #───────────────────────────────────────────────────────────────
 
 NOTARYTOOL_PROFILE="MemoryDot"
@@ -41,8 +41,10 @@ fi
 
 VERSION="$1"
 SKIP_NOTARIZE=false
+PUBLISH=true
 if [[ "${2:-}" == "--skip-notarize" ]]; then
     SKIP_NOTARIZE=true
+    PUBLISH=false
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -54,15 +56,25 @@ APP_PATH="$EXPORT_DIR/$APP_NAME.app"
 DMG_NAME="$APP_NAME-$VERSION.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
 
+cd "$PROJECT_DIR"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "Working tree is not clean. Commit or stash your changes first:"
+    git status --short
+    exit 1
+fi
+
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 echo "==> Releasing $APP_NAME v$VERSION"
+if [[ "$PUBLISH" == false ]]; then
+    echo "    --skip-notarize: building only, nothing will be published"
+fi
 
 # ── 1. Update version in project.yml ─────────────────────────
 
 echo "==> Updating version in project.yml..."
-cd "$PROJECT_DIR"
 sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"$VERSION\"/" project.yml
 
 # Increment build number (reads current value, adds 1)
@@ -71,12 +83,12 @@ NEW_BUILD=$((CURRENT_BUILD + 1))
 sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $NEW_BUILD/" project.yml
 echo "    Version: $VERSION  Build: $NEW_BUILD"
 
-# ── 2. Generate Xcode project ───────────────────────────────
+# ── 2. Generate Xcode project ────────────────────────────────
 
 echo "==> Generating Xcode project..."
 xcodegen generate --quiet
 
-# ── 2. Archive ───────────────────────────────────────────────
+# ── 3. Archive ───────────────────────────────────────────────
 
 echo "==> Archiving..."
 xcodebuild archive \
@@ -87,7 +99,7 @@ xcodebuild archive \
     -archivePath "$ARCHIVE_PATH" \
     -quiet
 
-# ── 3. Export signed .app ────────────────────────────────────
+# ── 4. Export signed .app ────────────────────────────────────
 
 echo "==> Exporting signed app..."
 
@@ -114,7 +126,7 @@ xcodebuild -exportArchive \
 
 echo "    Signed app: $APP_PATH"
 
-# ── 4. Create DMG ────────────────────────────────────────────
+# ── 5. Create DMG ────────────────────────────────────────────
 
 echo "==> Creating DMG..."
 hdiutil create \
@@ -126,7 +138,7 @@ hdiutil create \
 
 echo "    DMG: $DMG_PATH"
 
-# ── 5. Notarize ─────────────────────────────────────────────
+# ── 6. Notarize ──────────────────────────────────────────────
 
 if [[ "$SKIP_NOTARIZE" == true ]]; then
     echo "==> Skipping notarization (--skip-notarize)"
@@ -140,11 +152,25 @@ else
     xcrun stapler staple "$DMG_PATH"
 fi
 
-# ── 6. Upload to GitHub Releases ─────────────────────────────
+# ── 7. Publish release ───────────────────────────────────────
 
-echo "==> Creating GitHub release v$VERSION..."
+if [[ "$PUBLISH" == false ]]; then
+    echo "==> Skipping publication (--skip-notarize)"
+    echo "    Built: $DMG_PATH"
+    echo "    Note: project.yml is bumped to $VERSION ($NEW_BUILD) but not committed."
+    exit 0
+fi
+
 TAG="v$VERSION"
 
+echo "==> Committing version bump and tagging $TAG..."
+git add project.yml
+git commit -m "$VERSION ($NEW_BUILD)"
+git tag "$TAG"
+git push
+git push origin "$TAG"
+
+echo "==> Creating GitHub release $TAG..."
 gh release create "$TAG" "$DMG_PATH" \
     --repo "$GITHUB_REPO" \
     --title "$APP_NAME $TAG" \
@@ -154,7 +180,7 @@ gh release create "$TAG" "$DMG_PATH" \
 echo "    Draft release created. Review and publish at:"
 echo "    https://github.com/$GITHUB_REPO/releases"
 
-# ── 7. Update Homebrew cask ──────────────────────────────────
+# ── 8. Update Homebrew cask ──────────────────────────────────
 
 SHA256=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
 
@@ -200,11 +226,14 @@ CASK
 cd "$CASK_DIR"
 git add -A
 git commit -m "Update $APP_NAME to $VERSION"
-git push
 
 echo ""
 echo "==> Done!"
-echo "    1. Review the draft release: https://github.com/$GITHUB_REPO/releases"
-echo "    2. Publish it, then users can install with:"
+echo "    1. Review and publish the draft release:"
+echo "       https://github.com/$GITHUB_REPO/releases"
+echo "    2. The cask is committed but NOT pushed, because it points at that"
+echo "       release asset. Once the release is published, push it:"
+echo "       git -C \"$CASK_DIR\" push"
+echo "    3. Users can then install with:"
 echo "       brew tap nadimkobeissi/memorydot"
 echo "       brew install --cask memorydot"
