@@ -44,12 +44,24 @@ enum PressureLevel: String {
 final class MemoryMonitor {
 	/// VM breakdown stats — fetched on demand (only when the menu is open).
 	struct VMStats {
-		var wiredBytes: UInt64 = 0
-		var activeBytes: UInt64 = 0
-		var inactiveBytes: UInt64 = 0
-		var speculativeBytes: UInt64 = 0
-		var compressedBytes: UInt64 = 0
-		var freeBytes: UInt64 = 0
+		let wiredBytes: UInt64
+		let activeBytes: UInt64
+		let inactiveBytes: UInt64
+		let speculativeBytes: UInt64
+		let compressedBytes: UInt64
+		let freeBytes: UInt64
+
+		init(kernelStats stats: vm_statistics64, pageSize: UInt64) {
+			wiredBytes = UInt64(stats.wire_count) * pageSize
+			activeBytes = UInt64(stats.active_count) * pageSize
+			inactiveBytes = UInt64(stats.inactive_count) * pageSize
+			speculativeBytes = UInt64(stats.speculative_count) * pageSize
+			compressedBytes = UInt64(stats.compressor_page_count) * pageSize
+			// The kernel includes speculative pages in free_count. Show them only
+			// in their own row, clamping because these counters can change mid-read.
+			let freePages = stats.free_count - min(stats.free_count, stats.speculative_count)
+			freeBytes = UInt64(freePages) * pageSize
+		}
 	}
 
 	struct Snapshot {
@@ -63,7 +75,6 @@ final class MemoryMonitor {
 
 	let totalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
 
-	@ObservationIgnored private var timer: Timer?
 	@ObservationIgnored private var pressureSource: (any DispatchSourceMemoryPressure)?
 	@ObservationIgnored private var cachedDotImage: NSImage?
 	@ObservationIgnored private var cachedDotLevel: PressureLevel?
@@ -96,19 +107,24 @@ final class MemoryMonitor {
 
 	/// Timer polls only the lightweight sysctl calls (no Mach traps).
 	private func startPolling() {
-		let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
+		let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] timer in
+			guard let self else {
+				// The run loop retains repeating timers even after the monitor dies.
+				timer.invalidate()
+				return
+			}
 			MainActor.assumeIsolated {
-				self?.refreshKernelPressure()
+				self.refreshKernelPressure()
 			}
 		}
+		timer.tolerance = 1.0
 		RunLoop.main.add(timer, forMode: .common)
-		self.timer = timer
 	}
 
 	/// Dispatch source fires instantly on kernel pressure events (zero cost when idle).
 	private func startPressureSource() {
 		let source = DispatchSource.makeMemoryPressureSource(
-			eventMask: [.warning, .critical],
+			eventMask: [.normal, .warning, .critical],
 			queue: .main
 		)
 		source.setEventHandler { [weak self] in
@@ -162,14 +178,6 @@ final class MemoryMonitor {
 
 		guard result == KERN_SUCCESS else { return nil }
 
-		let pageSize = UInt64(getpagesize())
-		return VMStats(
-			wiredBytes: UInt64(stats.wire_count) * pageSize,
-			activeBytes: UInt64(stats.active_count) * pageSize,
-			inactiveBytes: UInt64(stats.inactive_count) * pageSize,
-			speculativeBytes: UInt64(stats.speculative_count) * pageSize,
-			compressedBytes: UInt64(stats.compressor_page_count) * pageSize,
-			freeBytes: UInt64(stats.free_count) * pageSize
-		)
+		return VMStats(kernelStats: stats, pageSize: UInt64(getpagesize()))
 	}
 }

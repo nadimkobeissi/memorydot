@@ -33,13 +33,18 @@ BUNDLE_ID="com.symbolicsoft.memorydot"
 
 # ── Parse arguments ──────────────────────────────────────────
 
-if [[ $# -lt 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != "--skip-notarize" ) ]]; then
     echo "Usage: $0 <version> [--skip-notarize]"
     echo "  e.g. $0 1.0"
     exit 1
 fi
 
 VERSION="$1"
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    echo "Invalid version: use one to three dot-separated integers (e.g. 1.3 or 1.3.1)." >&2
+    exit 1
+fi
+
 SKIP_NOTARIZE=false
 PUBLISH=true
 if [[ "${2:-}" == "--skip-notarize" ]]; then
@@ -49,18 +54,77 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_DIR="$PROJECT_DIR/.build/release"
+# SwiftPM owns .build/release (normally a symlink). Keep release artifacts separate.
+BUILD_DIR="$PROJECT_DIR/.build/distribution"
 ARCHIVE_PATH="$BUILD_DIR/$APP_NAME.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 APP_PATH="$EXPORT_DIR/$APP_NAME.app"
 DMG_NAME="$APP_NAME-$VERSION.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
+TAG="v$VERSION"
+CASK_DIR="$PROJECT_DIR/$TAP_REPO_DIR"
 
 cd "$PROJECT_DIR"
+
+# Fail before changing project.yml or spending time on an archive.
+for tool in git xcodegen xcodebuild hdiutil; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Required tool not found: $tool" >&2
+        exit 1
+    fi
+done
 
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "Working tree is not clean. Commit or stash your changes first:"
     git status --short
+    exit 1
+fi
+
+check_tap() {
+    [[ -d "$CASK_DIR" ]] || return 0
+    local tap_root
+    tap_root=$(git -C "$CASK_DIR" rev-parse --show-toplevel) || return 1
+    if [[ "$tap_root" != "$(cd "$CASK_DIR" && pwd -P)" ]]; then
+        echo "Tap checkout must be a repository root: $CASK_DIR" >&2
+        return 1
+    fi
+    if [[ -n "$(git -C "$CASK_DIR" status --porcelain)" ]]; then
+        echo "Tap working tree is not clean. Commit or stash its changes first:" >&2
+        git -C "$CASK_DIR" status --short
+        return 1
+    fi
+}
+
+if [[ "$PUBLISH" == true ]]; then
+    for tool in gh xcrun shasum; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "Required tool not found: $tool" >&2
+            exit 1
+        fi
+    done
+    gh auth status
+    # Check both refs: the remote tag might not have been fetched locally.
+    if git show-ref --verify --quiet "refs/tags/$TAG"; then
+        echo "Tag already exists: $TAG" >&2
+        exit 1
+    fi
+    REMOTE_TAG=$(git ls-remote --tags origin "refs/tags/$TAG")
+    if [[ -n "$REMOTE_TAG" ]]; then
+        echo "Tag already exists on origin: $TAG" >&2
+        exit 1
+    fi
+    check_tap
+fi
+
+# Require one numeric build setting so a malformed project cannot reset the build number.
+CURRENT_BUILD=$(awk '/^[[:space:]]*CURRENT_PROJECT_VERSION:/ { print $2 }' project.yml)
+if [[ ! "$CURRENT_BUILD" =~ ^[0-9]+$ || ${#CURRENT_BUILD} -gt 9 ]]; then
+    echo "Invalid CURRENT_PROJECT_VERSION in project.yml: $CURRENT_BUILD" >&2
+    exit 1
+fi
+NEW_BUILD=$((10#$CURRENT_BUILD + 1))
+if [[ $(awk '/^[[:space:]]*MARKETING_VERSION:/ { count++ } END { print count+0 }' project.yml) -ne 1 ]]; then
+    echo "Expected exactly one MARKETING_VERSION in project.yml." >&2
     exit 1
 fi
 
@@ -75,12 +139,10 @@ fi
 # ── 1. Update version in project.yml ─────────────────────────
 
 echo "==> Updating version in project.yml..."
-sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"$VERSION\"/" project.yml
+sed -i '' "s/^\([[:space:]]*MARKETING_VERSION:\).*/\1 \"$VERSION\"/" project.yml
 
-# Increment build number (reads current value, adds 1)
-CURRENT_BUILD=$(grep 'CURRENT_PROJECT_VERSION:' project.yml | sed 's/[^0-9]//g')
-NEW_BUILD=$((CURRENT_BUILD + 1))
-sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: $NEW_BUILD/" project.yml
+sed -i '' "s/^\([[:space:]]*CURRENT_PROJECT_VERSION:\).*/\1 $NEW_BUILD/" project.yml
+VERSIONED_PROJECT_HASH=$(git hash-object project.yml)
 echo "    Version: $VERSION  Build: $NEW_BUILD"
 
 # ── 2. Generate Xcode project ────────────────────────────────
@@ -161,11 +223,15 @@ if [[ "$PUBLISH" == false ]]; then
     exit 0
 fi
 
-TAG="v$VERSION"
-
 echo "==> Committing version bump and tagging $TAG..."
+# Refuse to tag sources edited while the archive/notarization was running.
+if [[ "$(git status --porcelain)" != " M project.yml" || "$(git hash-object project.yml)" != "$VERSIONED_PROJECT_HASH" ]]; then
+    echo "Working tree changed during the release. Review it before committing or publishing." >&2
+    git status --short
+    exit 1
+fi
 git add project.yml
-git commit -m "$VERSION ($NEW_BUILD)"
+git commit --only -m "$VERSION ($NEW_BUILD)" -- project.yml
 git tag "$TAG"
 git push
 git push origin "$TAG"
@@ -173,6 +239,7 @@ git push origin "$TAG"
 echo "==> Creating GitHub release $TAG..."
 gh release create "$TAG" "$DMG_PATH" \
     --repo "$GITHUB_REPO" \
+    --verify-tag \
     --title "$APP_NAME $TAG" \
     --notes "Release $APP_NAME $TAG" \
     --draft
@@ -186,7 +253,6 @@ SHA256=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
 
 echo "==> Updating Homebrew cask..."
 
-CASK_DIR="$PROJECT_DIR/$TAP_REPO_DIR"
 if [[ ! -d "$CASK_DIR" ]]; then
     echo "    Tap repo not found at $CASK_DIR"
     echo "    Clone it first:  gh repo clone nadimkobeissi/homebrew-memorydot $CASK_DIR"
@@ -197,6 +263,8 @@ if [[ ! -d "$CASK_DIR" ]]; then
     exit 0
 fi
 
+# Notarization can take a while; recheck before overwriting the cask.
+check_tap
 mkdir -p "$CASK_DIR/Casks"
 cat > "$CASK_DIR/Casks/memorydot.rb" <<CASK
 cask "memorydot" do
@@ -215,6 +283,8 @@ cask "memorydot" do
     strategy :github_latest
   end
 
+  depends_on macos: ">= :sonoma"
+
   app "$APP_NAME.app"
 
   zap trash: [
@@ -223,9 +293,8 @@ cask "memorydot" do
 end
 CASK
 
-cd "$CASK_DIR"
-git add -A
-git commit -m "Update $APP_NAME to $VERSION"
+git -C "$CASK_DIR" add -- Casks/memorydot.rb
+git -C "$CASK_DIR" commit --only -m "Update $APP_NAME to $VERSION" -- Casks/memorydot.rb
 
 echo ""
 echo "==> Done!"

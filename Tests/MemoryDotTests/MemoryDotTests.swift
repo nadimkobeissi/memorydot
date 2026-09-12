@@ -29,21 +29,57 @@ import Testing
 	#expect(ByteFormat.short(536_870_912) == "512 MB")
 }
 
-@Test @MainActor func readingVMStatsDoesNotLeakMachPorts() {
+@Test(arguments: [UInt64(4_096), UInt64(16_384)])
+@MainActor func vmBreakdownCountsSpeculativePagesOnlyOnce(pageSize: UInt64) {
+	var raw = vm_statistics64()
+	raw.wire_count = 10
+	raw.active_count = 20
+	raw.inactive_count = 30
+	raw.compressor_page_count = 40
+	raw.free_count = 100
+	raw.speculative_count = 25
+	let stats = MemoryMonitor.VMStats(kernelStats: raw, pageSize: pageSize)
+
+	#expect(stats.wiredBytes == 10 * pageSize)
+	#expect(stats.activeBytes == 20 * pageSize)
+	#expect(stats.inactiveBytes == 30 * pageSize)
+	#expect(stats.compressedBytes == 40 * pageSize)
+	#expect(stats.speculativeBytes == 25 * pageSize)
+	#expect(stats.freeBytes == 75 * pageSize)
+	#expect(stats.freeBytes + stats.speculativeBytes == UInt64(raw.free_count) * pageSize)
+}
+
+@Test @MainActor func vmBreakdownHandlesChangingFreeCountersWithoutUnderflow() {
+	var raw = vm_statistics64()
+	raw.free_count = 10
+	raw.speculative_count = 11
+	let stats = MemoryMonitor.VMStats(kernelStats: raw, pageSize: 16_384)
+	#expect(stats.freeBytes == 0)
+	#expect(stats.speculativeBytes == 11 * 16_384)
+}
+
+@Test @MainActor func vmBreakdownConvertsLargePageCountsWithoutOverflow() {
+	var raw = vm_statistics64()
+	raw.active_count = .max
+	let stats = MemoryMonitor.VMStats(kernelStats: raw, pageSize: 16_384)
+	#expect(stats.activeBytes == UInt64(UInt32.max) * 16_384)
+}
+
+@Test @MainActor func readingVMStatsDoesNotLeakMachPorts() throws {
 	let host = mach_host_self()
 	defer { mach_port_deallocate(mach_task_self_, host) }
 
-	func sendRights() -> mach_port_urefs_t {
+	func sendRights() throws -> mach_port_urefs_t {
 		var refs: mach_port_urefs_t = 0
-		mach_port_get_refs(mach_task_self_, host, MACH_PORT_RIGHT_SEND, &refs)
+		try #require(mach_port_get_refs(mach_task_self_, host, MACH_PORT_RIGHT_SEND, &refs) == KERN_SUCCESS)
 		return refs
 	}
 
 	#expect(MemoryMonitor.readVMStats() != nil)
 
-	let before = sendRights()
+	let before = try sendRights()
 	for _ in 0..<200 {
 		_ = MemoryMonitor.readVMStats()
 	}
-	#expect(sendRights() == before)
+	#expect(try sendRights() == before)
 }

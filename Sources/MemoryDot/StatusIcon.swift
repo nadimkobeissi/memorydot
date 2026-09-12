@@ -13,7 +13,7 @@ enum StatusIcon {
 			let fontSize: CGFloat = dotRect.height * (letter.length > 1 ? 0.45 : 0.6)
 			let attributes: [NSAttributedString.Key: Any] = [
 				.font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
-				.foregroundColor: NSColor.white,
+				.foregroundColor: NSColor.black,
 			]
 			let textSize = letter.size(withAttributes: attributes)
 			let textRect = CGRect(

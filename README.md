@@ -17,18 +17,20 @@ brew install --cask memorydot
 
 MemoryDot reads macOS's real memory pressure metrics — the same ones used by the `memory_pressure` command-line tool — not naive "free vs. used" calculations.
 
-- **Green**: Normal — the system has plenty of available memory.
-- **Yellow**: Warning — the kernel is under memory pressure.
-- **Red**: Critical — severe memory pressure, heavy swapping/compression.
+- **Green `M`**: Normal — the system has plenty of available memory.
+- **Yellow `!`**: Warning — the kernel is under memory pressure.
+- **Red `!!`**: Critical — severe memory pressure, heavy swapping/compression.
 
-Click the dot to see a breakdown of your system's memory (wired, active, inactive, compressed, free) and the kernel's free percentage.
+Click the dot to see a breakdown of your system's memory (wired, active, inactive, speculative, compressed, free) and the kernel's free percentage. The Free row excludes pages shown in the Speculative row. The breakdown does not account for every physical page, so its rows need not add up to Physical Memory.
+
+Enable **Launch at Login** in the menu to start MemoryDot automatically. If macOS requires approval, **Approve Launch at Login…** opens the Login Items settings.
 
 ## Performance
 
 MemoryDot is designed to be invisible in terms of resource usage:
 
-- **Idle polling**: Two lightweight `sysctl` reads every 10 seconds (no Mach traps).
-- **Event-driven**: A `DispatchSource` memory pressure listener fires instantly on kernel pressure changes with zero idle cost.
+- **Idle polling**: Two lightweight `sysctl` reads every 10 seconds, with one second of timer tolerance to let macOS coalesce wakeups (no Mach traps).
+- **Event-driven**: A `DispatchSource` memory pressure listener fires instantly on warning, critical, and recovery-to-normal events with zero idle cost.
 - **On-demand stats**: The detailed VM breakdown (`host_statistics64`) is only fetched when you open the menu.
 - **Cached icon**: The menu bar image is only redrawn when the pressure level actually changes.
 
@@ -46,6 +48,8 @@ swift build
 .build/debug/MemoryDot
 ```
 
+This produces a development executable without an app bundle, so it shows a Dock icon and “MemoryDot (Development)” in the menu. Use the Xcode build for the app icon, bundled version, and Launch at Login support.
+
 ### With Xcode (via xcodegen)
 
 ```bash
@@ -55,6 +59,26 @@ open MemoryDot.xcodeproj
 ```
 
 Then build and run with Cmd+R.
+
+## Testing
+
+```bash
+swift test
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s Tests/ReleaseScriptTests -v
+```
+
+Swift tests cover pressure levels, byte formatting, VM page accounting, and Mach port ownership. Release-script tests use temporary Git repositories and mock the build, signing, and publication tools; they do not publish releases or change your Homebrew tap.
+
+## Releasing
+
+```bash
+./scripts/release.sh 1.4 --skip-notarize  # build only
+./scripts/release.sh 1.4                  # notarize and create a draft release
+```
+
+Run from a clean working tree. The script validates the version and tools before building, checks for existing release tags, and requires a clean sibling tap checkout if present. Artifacts go in `.build/distribution/`. Build-only mode leaves the version bump uncommitted and skips notarization and publication.
+
+For a full release, follow the one-time setup in `scripts/release.sh`. After reviewing and publishing the draft on GitHub, push the cask commit from `../homebrew-memorydot` using the command printed by the script.
 
 ## License
 

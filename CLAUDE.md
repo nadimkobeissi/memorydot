@@ -12,14 +12,15 @@ MemoryDot is a macOS menu bar app (Swift 6, SwiftUI, macOS 14+) that shows the k
 swift build && .build/debug/MemoryDot    # fast iteration; compiles and runs the menu bar app
 swift test                               # run the unit tests
 swift test --filter formatsGigabytes     # run a single test by name
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s Tests/ReleaseScriptTests -v # release-script regression tests
 xcodegen generate                        # regenerate MemoryDot.xcodeproj from project.yml
 ./scripts/release.sh 1.3                 # full release (see Releasing below)
 ./scripts/release.sh 1.3 --skip-notarize # build only, publishes nothing
 ```
 
-Tests live in `Tests/MemoryDotTests` and are wired up in `Package.swift` only — the xcodegen target builds just `Sources/MemoryDot`, so `swift test` is the only way to run them. They cover the pure pieces: the kernel-value→`PressureLevel` mapping, `ByteFormat`, and a regression test asserting `readVMStats()` does not leak Mach port send rights.
+Swift tests live in `Tests/MemoryDotTests` and are wired up in `Package.swift` only — the xcodegen target builds just `Sources/MemoryDot`, so `swift test` is the only way to run them. They cover the kernel-value→`PressureLevel` mapping, `ByteFormat`, VM page accounting, and a regression test asserting `readVMStats()` does not leak Mach port send rights. `Tests/ReleaseScriptTests` uses Python's standard-library unittest runner, temporary Git repositories, and mocked Apple/GitHub tools to check release ordering and failure paths without publishing anything.
 
-`swift build` is the quickest way to check a change compiles and to see the dot in the menu bar. It does **not** produce a real app bundle, so anything that depends on `Info.plist` behaves differently there: no `LSUIElement` (a Dock icon appears), no app icon, and `Bundle.main.infoDictionary["CFBundleShortVersionString"]` is nil so the menu falls back to showing "v1.0". Verify those through the Xcode build instead.
+`swift build` is the quickest way to check a change compiles and to see the dot in the menu bar. It does **not** produce a real app bundle, so anything that depends on `Info.plist` behaves differently there: no `LSUIElement` (a Dock icon appears), no app icon, and `Bundle.main.infoDictionary["CFBundleShortVersionString"]` is nil so the menu shows "MemoryDot (Development)". Verify those through the Xcode build instead.
 
 ## Generated project file
 
@@ -31,8 +32,8 @@ The version number has exactly one source of truth: `MARKETING_VERSION` / `CURRE
 
 The whole design is about keeping idle cost near zero, so data acquisition is split into three deliberately-priced tiers in `MemoryMonitor`:
 
-1. **Poll (cheap, every 10s)** — `refreshKernelPressure()` does two `sysctlbyname` reads (`kern.memorystatus_level`, `kern.memorystatus_vm_pressure_level`). No Mach traps. This is the only thing on the timer.
-2. **Event (free, instant)** — a `DispatchSourceMemoryPressure` fires on kernel warning/critical transitions and calls the same refresh, so real pressure spikes surface immediately without shortening the timer.
+1. **Poll (cheap, every 10s)** — `refreshKernelPressure()` does two `sysctlbyname` reads (`kern.memorystatus_level`, `kern.memorystatus_vm_pressure_level`). No Mach traps. This is the only thing on the timer. One second of tolerance lets the system coalesce wakeups; the timer invalidates itself if its monitor has been released.
+2. **Event (free, instant)** — a `DispatchSourceMemoryPressure` fires on kernel warning/critical transitions and recovery to normal, calling the same refresh so changes surface immediately without shortening the timer.
 3. **On-demand (expensive)** — `readVMStats()` makes a `host_statistics64` Mach trap for the memory breakdown. It is reached through `currentSnapshot()`, called from `MenuContentView.body`, which under `.menuBarExtraStyle(.menu)` only evaluates while the menu is open.
 
 Keep that separation. Moving `readVMStats()` into the polling path, or shortening the timer to compensate for a missing event source, is exactly the regression this structure exists to prevent.
@@ -52,6 +53,7 @@ Raw `kern.memorystatus_vm_pressure_level` values map as `4` → critical, `2` �
 - **`.menuBarExtraStyle(.menu)` constrains the view.** `MenuContentView`'s top-level body must stay menu-compatible items (`Text`, `Button`, `Toggle`, `Divider`, `Label`). Arbitrary SwiftUI layout at that level either doesn't render or forces a switch to `.window` style.
 - **Launch-at-login state is read fresh in `body`, never stored in `@State`.** Caching it means the toggle goes stale when the user changes the login item in System Settings, and driving the write from `.onChange` makes a failed `register()` re-enter and fire a spurious `unregister()`. The current binding writes straight through to `SMAppService`. It requires a signed bundle, so it won't work under `swift build`.
 - **The VM breakdown does not sum to physical memory.** Even with the speculative row, the buckets fall short of `ProcessInfo.physicalMemory` (~0.85 GB on a 16 GB machine) because not all physical memory is page-accounted. That is why the last row reads "Physical Memory" rather than "Total" — don't relabel it in a way that implies the rows add up.
+- **The kernel's `free_count` already includes `speculative_count`.** `VMStats` subtracts speculative pages from the Free row to avoid double-counting, clamping the subtraction because kernel counters can change during the read.
 - **A failed Mach call must not render as zeros.** `readVMStats()` returns `nil` on failure and the menu shows "Breakdown unavailable"; returning a zeroed struct instead would display a plausible-looking all-zero breakdown.
 
 ## Releasing
@@ -59,6 +61,8 @@ Raw `kern.memorystatus_vm_pressure_level` values map as `4` → critical, `2` �
 `./scripts/release.sh <version>` runs the whole pipeline: verify the working tree is clean, bump `project.yml` (auto-incrementing the build number), `xcodegen generate`, archive, export a Developer ID-signed `.app`, build a DMG, notarize and staple, commit and tag the bump, push, create a **draft** GitHub release, and rewrite the Homebrew cask in `../homebrew-memorydot` (sibling checkout).
 
 It assumes a notarytool keychain profile named `MemoryDot`, `gh` auth, and that sibling tap checkout; the header comment in the script documents the one-time setup.
+
+Artifacts live in `.build/distribution`, separate from SwiftPM's `.build/release`. Before building, the script rejects malformed arguments/build settings, existing release tags, and a dirty tap checkout. It rechecks the source tree before tagging and the tap before rewriting the cask. Commits explicitly include only `project.yml` or `Casks/memorydot.rb`, respectively.
 
 Three ordering rules the script encodes deliberately:
 
