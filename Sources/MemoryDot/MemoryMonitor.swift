@@ -1,7 +1,6 @@
 import AppKit
-import Observation
 
-enum PressureLevel: String {
+enum PressureLevel {
 	case normal
 	case warning
 	case critical
@@ -39,10 +38,9 @@ enum PressureLevel: String {
 	}
 }
 
-@Observable
 @MainActor
 final class MemoryMonitor {
-	/// VM breakdown stats — fetched on demand (only when the menu is open).
+	/// VM breakdown stats — fetched on demand (only when the menu opens).
 	struct VMStats {
 		let wiredBytes: UInt64
 		let activeBytes: UInt64
@@ -64,48 +62,49 @@ final class MemoryMonitor {
 		}
 	}
 
+	/// Everything the menu shows, read at one moment. A `nil` field means the
+	/// kernel read failed; the menu says so rather than showing a stand-in value.
 	struct Snapshot {
-		var pressureLevel: PressureLevel
-		var freePercent: Int
+		var pressureLevel: PressureLevel?
+		var availablePercent: Int?
 		var vmStats: VMStats?
+		var physicalBytes: UInt64
 	}
 
-	private(set) var pressureLevel: PressureLevel = .normal
-	private(set) var systemFreePercent: Int = 100
+	private(set) var pressureLevel: PressureLevel = .normal {
+		didSet {
+			if pressureLevel != oldValue {
+				onPressureLevelChange?(pressureLevel)
+			}
+		}
+	}
+	/// Called on the main thread whenever `pressureLevel` changes.
+	var onPressureLevelChange: ((PressureLevel) -> Void)?
 
-	let totalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
-
-	@ObservationIgnored private var pressureSource: (any DispatchSourceMemoryPressure)?
-	@ObservationIgnored private var cachedDotImage: NSImage?
-	@ObservationIgnored private var cachedDotLevel: PressureLevel?
+	private var pressureSource: (any DispatchSourceMemoryPressure)?
 
 	init() {
-		refreshKernelPressure()
+		refreshPressureLevel()
 		startPolling()
 		startPressureSource()
 	}
 
-	/// Cached dot image — only rebuilt when pressure level changes.
-	var dotImage: NSImage {
-		if let cached = cachedDotImage, cachedDotLevel == pressureLevel {
-			return cached
+	/// Reads everything at once, including the expensive VM breakdown. Records the
+	/// fresh pressure level too, so the menu bar dot never disagrees with the menu.
+	func snapshot() -> Snapshot {
+		let level = Self.readPressureLevel()
+		if let level {
+			pressureLevel = level
 		}
-		let image = StatusIcon.createDotImage(for: pressureLevel)
-		cachedDotImage = image
-		cachedDotLevel = pressureLevel
-		return image
-	}
-
-	func currentSnapshot() -> Snapshot {
-		let kernel = Self.readKernelPressure()
 		return Snapshot(
-			pressureLevel: kernel?.level ?? pressureLevel,
-			freePercent: kernel?.freePercent ?? systemFreePercent,
-			vmStats: Self.readVMStats()
+			pressureLevel: level,
+			availablePercent: Self.readAvailablePercent(),
+			vmStats: Self.readVMStats(),
+			physicalBytes: ProcessInfo.processInfo.physicalMemory
 		)
 	}
 
-	/// Timer polls only the lightweight sysctl calls (no Mach traps).
+	/// Timer polls only the lightweight sysctl call (no Mach traps).
 	private func startPolling() {
 		let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] timer in
 			guard let self else {
@@ -114,7 +113,7 @@ final class MemoryMonitor {
 				return
 			}
 			MainActor.assumeIsolated {
-				self.refreshKernelPressure()
+				self.refreshPressureLevel()
 			}
 		}
 		timer.tolerance = 1.0
@@ -129,36 +128,39 @@ final class MemoryMonitor {
 		)
 		source.setEventHandler { [weak self] in
 			MainActor.assumeIsolated {
-				self?.refreshKernelPressure()
+				self?.refreshPressureLevel()
 			}
 		}
 		source.activate()
 		pressureSource = source
 	}
 
-	private func refreshKernelPressure() {
-		guard let kernel = Self.readKernelPressure() else { return }
-		systemFreePercent = kernel.freePercent
-		pressureLevel = kernel.level
+	private func refreshPressureLevel() {
+		if let level = Self.readPressureLevel() {
+			pressureLevel = level
+		}
 	}
 
-	/// Two lightweight sysctl reads — no Mach traps.
-	private static func readKernelPressure() -> (level: PressureLevel, freePercent: Int)? {
-		var freeLevel: Int32 = 0
+	/// `kern.memorystatus_vm_pressure_level`: the level the kernel reports to
+	/// dispatch memory pressure sources (1 normal, 2 warning, 4 critical).
+	static func readPressureLevel() -> PressureLevel? {
+		readSysctl("kern.memorystatus_vm_pressure_level").map(PressureLevel.init(kernelValue:))
+	}
+
+	/// `kern.memorystatus_level`: the percentage of memory the kernel counts as
+	/// available. `memory_pressure` prints it as the "free percentage", but it is
+	/// far larger than the Free row, so the menu calls it "available".
+	static func readAvailablePercent() -> Int? {
+		readSysctl("kern.memorystatus_level").map(Int.init)
+	}
+
+	private static func readSysctl(_ name: String) -> Int32? {
+		var value: Int32 = 0
 		var size = MemoryLayout<Int32>.size
-		guard sysctlbyname("kern.memorystatus_level", &freeLevel, &size, nil, 0) == 0 else {
+		guard sysctlbyname(name, &value, &size, nil, 0) == 0, size == MemoryLayout<Int32>.size else {
 			return nil
 		}
-
-		var pressureValue: Int32 = 0
-		size = MemoryLayout<Int32>.size
-		guard
-			sysctlbyname("kern.memorystatus_vm_pressure_level", &pressureValue, &size, nil, 0) == 0
-		else {
-			return nil
-		}
-
-		return (PressureLevel(kernelValue: pressureValue), Int(freeLevel))
+		return value
 	}
 
 	static func readVMStats() -> VMStats? {

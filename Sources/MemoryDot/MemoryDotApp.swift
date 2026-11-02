@@ -1,16 +1,13 @@
-import SwiftUI
+import AppKit
 
 @main
-struct MemoryDotApp: App {
-	@State private var monitor = MemoryMonitor()
-
-	var body: some Scene {
-		MenuBarExtra {
-			MenuContentView(monitor: monitor)
-		} label: {
-			Image(nsImage: monitor.dotImage)
-				.accessibilityLabel("Memory pressure: \(monitor.pressureLevel.displayName)")
+@MainActor
+enum MemoryDotApp {
+	static func main() {
+		let app = NSApplication.shared
+		let controller = StatusItemController()
+		withExtendedLifetime(controller) {
+			app.run()
 		}
-		.menuBarExtraStyle(.menu)
 	}
 }

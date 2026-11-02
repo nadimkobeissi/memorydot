@@ -21,7 +21,7 @@ MemoryDot reads macOS's real memory pressure metrics — the same ones used by t
 - **Yellow `!`**: Warning — the kernel is under memory pressure.
 - **Red `!!`**: Critical — severe memory pressure, heavy swapping/compression.
 
-Click the dot to see a breakdown of your system's memory (wired, active, inactive, speculative, compressed, free) and the kernel's free percentage. The Free row excludes pages shown in the Speculative row. The breakdown does not account for every physical page, so its rows need not add up to Physical Memory.
+Click the dot to see a breakdown of your system's memory (wired, active, inactive, speculative, compressed, free) and the kernel's available-memory percentage, read fresh each time the menu opens. That percentage is what `memory_pressure` calls the "free percentage"; it counts far more than the Free row, so MemoryDot calls it "available". The Free row excludes pages shown in the Speculative row. The breakdown does not account for every physical page, so its rows need not add up to Physical Memory.
 
 Enable **Launch at Login** in the menu to start MemoryDot automatically. If macOS requires approval, **Approve Launch at Login…** opens the Login Items settings.
 
@@ -29,10 +29,10 @@ Enable **Launch at Login** in the menu to start MemoryDot automatically. If macO
 
 MemoryDot is designed to be invisible in terms of resource usage:
 
-- **Idle polling**: Two lightweight `sysctl` reads every 10 seconds, with one second of timer tolerance to let macOS coalesce wakeups (no Mach traps).
+- **Idle polling**: One lightweight `sysctl` read every 10 seconds, with one second of timer tolerance to let macOS coalesce wakeups (no Mach traps).
 - **Event-driven**: A `DispatchSource` memory pressure listener fires instantly on warning, critical, and recovery-to-normal events with zero idle cost.
 - **On-demand stats**: The detailed VM breakdown (`host_statistics64`) is only fetched when you open the menu.
-- **Cached icon**: The menu bar image is only redrawn when the pressure level actually changes.
+- **Redraw on change**: The menu bar image is only redrawn when the pressure level actually changes.
 
 ## Requirements
 
@@ -67,7 +67,7 @@ swift test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s Tests/ReleaseScriptTests -v
 ```
 
-Swift tests cover pressure levels, byte formatting, VM page accounting, and Mach port ownership. Release-script tests use temporary Git repositories and mock the build, signing, and publication tools; they do not publish releases or change your Homebrew tap.
+Swift tests cover pressure levels, byte formatting, VM page accounting, menu contents, and Mach port ownership. Release-script tests use temporary Git repositories and mock the build, signing, and publication tools; they do not publish releases or change your Homebrew tap.
 
 ## Releasing
 
